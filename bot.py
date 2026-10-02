@@ -1,373 +1,587 @@
 import os
-import io
-import time
+import json
+import base64
+import shutil
+import subprocess
+import tempfile
+import threading
+
 import requests
 
-from flask import Flask, request
-from PIL import Image, ImageDraw, ImageFont
+from flask import Flask, request, jsonify
+from google import genai
 
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-3.5-flash-lite:generateContent"
+client = genai.Client(
+    api_key=GEMINI_API_KEY
 )
 
+CHAT_MODEL = "gemini-3.8-flash"
+IMAGE_MODEL = "gemini-3.1-flash-image"
+TTS_MODEL = "gemini-3.8-flash-tts"
 
-# =========================
-# Telegram
-# =========================
 
-def telegram(method, data=None, files=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+# ==========================================
+# TELEGRAM
+# ==========================================
 
-    response = requests.post(
-        url,
-        data=data,
+def telegram(method, data=None, files=None, timeout=120):
+
+    return requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+        json=data,
         files=files,
-        timeout=60
+        timeout=timeout
     )
-
-    return response
 
 
 def send_message(chat_id, text):
-    telegram(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text
-        }
-    )
 
+    try:
 
-# =========================
-# Gemini
-# =========================
-
-def ask_gemini(prompt):
-
-    response = requests.post(
-        GEMINI_URL,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        },
-        json={
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": prompt
-                        }
-                    ]
-                }
-            ]
-        },
-        timeout=30
-    )
-
-    result = response.json()
-
-    if not response.ok:
-        error = result.get("error", {})
-
-        return (
-            "❌ Gemini API Error\n\n"
-            f"Code: {error.get('code', response.status_code)}\n"
-            f"Status: {error.get('status', 'UNKNOWN')}\n"
-            f"Message: {error.get('message', 'Unknown error')}"
+        telegram(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text
+            }
         )
 
-    candidates = result.get("candidates", [])
+    except Exception as e:
 
-    if not candidates:
-        return "❌ Gemini لم يرجع إجابة."
-
-    return (
-        candidates[0]
-        .get("content", {})
-        .get("parts", [{}])[0]
-        .get("text", "لم يتم العثور على إجابة.")
-    )
+        print("Telegram message error:", e)
 
 
-# =========================
-# Font
-# =========================
+def send_video(chat_id, path, caption):
 
-def get_font(size):
+    try:
 
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
-    ]
+        with open(path, "rb") as video:
 
-    for path in paths:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
+            response = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo",
+                data={
+                    "chat_id": str(chat_id),
+                    "caption": caption
+                },
+                files={
+                    "video": (
+                        "video.mp4",
+                        video,
+                        "video/mp4"
+                    )
+                },
+                timeout=600
+            )
 
-    return ImageFont.load_default()
+        print("Telegram video:", response.text)
+
+    except Exception as e:
+
+        print("Telegram video error:", e)
 
 
-# =========================
-# Create educational video
-# =========================
+# ==========================================
+# SCRIPT
+# ==========================================
 
-def create_video(topic):
+def create_script(topic, minutes):
 
-    width = 640
-    height = 360
+    target_words = int(minutes * 125)
 
-    frames = []
-
-    title_font = get_font(32)
-    text_font = get_font(22)
-    small_font = get_font(18)
-
-    # Ask Gemini for a simple educational storyboard
     prompt = f"""
-أنت مصمم فيديوهات تعليمية قصيرة.
+أنت كاتب محتوى تعليمي محترف.
+
+اكتب سيناريو فيديو عربي باللهجة العربية الفصحى البسيطة.
 
 الموضوع:
 {topic}
 
-اكتب 4 مشاهد قصيرة جدًا للفيديو.
-كل مشهد في سطر واحد فقط.
-اجعل الشرح مناسبًا للطلاب وبسيطًا ودقيقًا.
-لا تستخدم رموز غريبة أو Markdown.
+مدة الفيديو المطلوبة:
+{minutes} دقيقة.
+
+عدد الكلمات التقريبي:
+{target_words}
+
+قسّم السيناريو إلى مشاهد.
+
+كل مشهد يجب أن يحتوي:
+- narration: الكلام الذي سيقوله المعلق الصوتي.
+- image_prompt: وصف تفصيلي للصورة المطلوبة.
+- seconds: مدة المشهد بالثواني.
+
+استخدم مشاهد كثيرة بحيث يكون الفيديو متنوعًا.
+
+أرجع JSON فقط بهذا الشكل:
+
+{{
+  "title": "عنوان الفيديو",
+  "scenes": [
+    {{
+      "narration": "النص",
+      "image_prompt": "وصف الصورة",
+      "seconds": 10
+    }}
+  ]
+}}
 """
 
-    storyboard = ask_gemini(prompt)
-
-    scenes = [
-        line.strip()
-        for line in storyboard.splitlines()
-        if line.strip()
-    ]
-
-    if not scenes:
-        scenes = [
-            f"شرح مبسط عن: {topic}",
-            "المشهد الثاني",
-            "المشهد الثالث",
-            "الخلاصة"
-        ]
-
-    scenes = scenes[:4]
-
-    # Create animated frames
-    for scene_index, scene in enumerate(scenes):
-
-        for frame_number in range(15):
-
-            image = Image.new(
-                "RGB",
-                (width, height),
-                (245, 248, 252)
-            )
-
-            draw = ImageDraw.Draw(image)
-
-            # Header
-            draw.rectangle(
-                (0, 0, width, 70),
-                fill=(30, 80, 140)
-            )
-
-            title = "AI Educational Video"
-
-            draw.text(
-                (20, 18),
-                title,
-                font=title_font,
-                fill="white"
-            )
-
-            # Topic
-            draw.text(
-                (25, 95),
-                topic[:45],
-                font=text_font,
-                fill=(20, 20, 20)
-            )
-
-            # Animated circles = simple visual representation
-            progress = frame_number / 14
-
-            x1 = int(150 + progress * 120)
-            x2 = int(490 - progress * 120)
-
-            draw.ellipse(
-                (x1 - 35, 180 - 35,
-                 x1 + 35, 180 + 35),
-                fill=(80, 150, 230)
-            )
-
-            draw.ellipse(
-                (x2 - 35, 180 - 35,
-                 x2 + 35, 180 + 35),
-                fill=(230, 100, 100)
-            )
-
-            # Connection
-            draw.line(
-                (x1 + 35, 180, x2 - 35, 180),
-                fill=(100, 100, 100),
-                width=5
-            )
-
-            # Scene text
-            words = scene[:180]
-
-            # Simple wrapping
-            lines = []
-
-            current = ""
-
-            for word in words.split():
-
-                test = current + " " + word
-
-                if len(test) > 45:
-                    lines.append(current)
-                    current = word
-                else:
-                    current = test
-
-            if current:
-                lines.append(current)
-
-            y = 250
-
-            for line in lines[:4]:
-
-                draw.text(
-                    (25, y),
-                    line,
-                    font=small_font,
-                    fill=(30, 30, 30)
-                )
-
-                y += 25
-
-            frames.append(image)
-
-    # Save GIF in temporary directory
-    filename = f"/tmp/video_{int(time.time())}.gif"
-
-    frames[0].save(
-        filename,
-        save_all=True,
-        append_images=frames[1:],
-        duration=100,
-        loop=0
+    response = client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=prompt
     )
 
-    return filename
+    text = response.text.strip()
+
+    # إزالة markdown إن وُجد
+    if text.startswith("```"):
+
+        text = text.replace("```json", "")
+        text = text.replace("```", "")
+        text = text.strip()
+
+    return json.loads(text)
 
 
-# =========================
-# Send video/animation
-# =========================
+# ==========================================
+# IMAGE
+# ==========================================
 
-def send_video(chat_id, filename):
+def create_image(prompt, path):
 
-    with open(filename, "rb") as video_file:
+    interaction = client.interactions.create(
+        model=IMAGE_MODEL,
+        input=prompt,
+        response_format={
+            "type": "image",
+            "aspect_ratio": "16:9"
+        }
+    )
 
-        telegram(
-            "sendAnimation",
-            data={
-                "chat_id": chat_id,
-                "caption": "🎬 تم إنشاء الفيديو التعليمي"
-            },
-            files={
-                "animation": (
-                    "educational_video.gif",
-                    video_file,
-                    "image/gif"
-                )
+    if not interaction.output_image:
+
+        raise Exception(
+            "Gemini لم يرجع صورة."
+        )
+
+    data = base64.b64decode(
+        interaction.output_image.data
+    )
+
+    with open(path, "wb") as f:
+
+        f.write(data)
+
+
+# ==========================================
+# TTS
+# ==========================================
+
+def create_voice(text, path):
+
+    interaction = client.interactions.create(
+
+        model=TTS_MODEL,
+
+        input=[
+            {
+                "type": "user_input",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text,
+                        "annotations": [
+                            {
+                                "type": "speech_metadata",
+                                "style": (
+                                    "clear educational Arabic "
+                                    "narration, friendly and natural"
+                                )
+                            }
+                        ]
+                    }
+                ]
             }
+        ],
+
+        response_format={
+            "type": "audio"
+        },
+
+        generation_config={
+            "speech_config": [
+                {
+                    "voice": "Kore"
+                }
+            ]
+        }
+    )
+
+    if not interaction.output_audio:
+
+        raise Exception(
+            "Gemini لم يرجع صوتًا."
+        )
+
+    audio = base64.b64decode(
+        interaction.output_audio.data
+    )
+
+    with open(path, "wb") as f:
+
+        f.write(audio)
+
+
+# ==========================================
+# FFMPEG
+# ==========================================
+
+def run_ffmpeg(command):
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+
+        print(result.stderr)
+
+        raise Exception(
+            "FFmpeg error"
         )
 
 
-# =========================
-# Main Webhook
-# =========================
+# ==========================================
+# CREATE IMAGE VIDEO
+# ==========================================
 
-@app.route("/api", methods=["POST"])
-def telegram_webhook():
+def create_scene_video(
+    image,
+    audio,
+    output,
+    seconds
+):
 
-    data = request.get_json(silent=True) or {}
+    # Zoom بسيط على الصورة
+    frames = int(seconds * 30)
 
-    if "message" not in data:
-        return "OK", 200
+    filter_complex = (
+        "scale=1920:1080:force_original_aspect_ratio=increase,"
+        "crop=1920:1080,"
+        f"zoompan=z='min(zoom+0.0008,1.12)':"
+        f"d={frames}:"
+        "x='iw/2-(iw/zoom/2)':"
+        "y='ih/2-(ih/zoom/2)':"
+        "s=1920x1080:"
+        "fps=30"
+    )
 
-    message = data["message"]
+    command = [
+        "ffmpeg",
+        "-y",
 
-    chat_id = message["chat"]["id"]
+        "-loop",
+        "1",
 
-    user_text = message.get("text", "").strip()
+        "-i",
+        image,
 
-    if not user_text:
-        return "OK", 200
+        "-i",
+        audio,
 
-    # =====================
-    # VIDEO COMMAND
-    # =====================
+        "-vf",
+        filter_complex,
 
-    if user_text.startswith("/video"):
+        "-t",
+        str(seconds),
 
-        topic = user_text[6:].strip()
+        "-c:v",
+        "libx264",
 
-        if not topic:
+        "-preset",
+        "veryfast",
 
-            send_message(
-                chat_id,
-                "🎬 اكتب موضوع الفيديو بعد الأمر.\n\n"
-                "مثال:\n"
-                "/video تفاعل حمض الهيدروكلوريك مع هيدروكسيد الصوديوم"
+        "-pix_fmt",
+        "yuv420p",
+
+        "-c:a",
+        "aac",
+
+        "-shortest",
+
+        output
+    ]
+
+    run_ffmpeg(command)
+
+
+# ==========================================
+# CONCAT VIDEOS
+# ==========================================
+
+def concat_videos(files, output):
+
+    list_file = output + ".txt"
+
+    with open(list_file, "w", encoding="utf-8") as f:
+
+        for file in files:
+
+            safe = os.path.abspath(file).replace(
+                "'",
+                "'\\''"
             )
 
-            return "OK", 200
+            f.write(
+                f"file '{safe}'\n"
+            )
+
+    command = [
+        "ffmpeg",
+        "-y",
+
+        "-f",
+        "concat",
+
+        "-safe",
+        "0",
+
+        "-i",
+        list_file,
+
+        "-c",
+        "copy",
+
+        output
+    ]
+
+    run_ffmpeg(command)
+
+    os.remove(list_file)
+
+
+# ==========================================
+# FULL VIDEO JOB
+# ==========================================
+
+def make_video(chat_id, minutes, topic):
+
+    work = tempfile.mkdtemp(
+        prefix="ai_video_"
+    )
+
+    try:
 
         send_message(
             chat_id,
-            "🎬 جاري إنشاء الفيديو...\n\n"
-            f"الموضوع: {topic}"
+            "🧠 جاري كتابة السيناريو وتقسيمه لمشاهد..."
         )
 
-        try:
+        script = create_script(
+            topic,
+            minutes
+        )
 
-            filename = create_video(topic)
+        scenes = script["scenes"]
 
-            send_video(
-                chat_id,
-                filename
+        # لا نسمح بعدد ضخم جدًا من الصور
+        max_scenes = 120
+
+        scenes = scenes[:max_scenes]
+
+        send_message(
+            chat_id,
+            f"🎬 عدد المشاهد: {len(scenes)}\n"
+            "🖼️ جاري إنشاء الصور..."
+        )
+
+        scene_videos = []
+
+        for index, scene in enumerate(scenes):
+
+            number = index + 1
+
+            image_path = os.path.join(
+                work,
+                f"image_{number}.png"
             )
 
-        except Exception as e:
+            audio_path = os.path.join(
+                work,
+                f"audio_{number}.wav"
+            )
+
+            video_path = os.path.join(
+                work,
+                f"scene_{number}.mp4"
+            )
+
+            seconds = float(
+                scene.get(
+                    "seconds",
+                    10
+                )
+            )
+
+            # منع قيم غريبة
+            seconds = max(
+                3,
+                min(seconds, 30)
+            )
+
+            print(
+                f"Scene {number}/{len(scenes)}"
+            )
+
+            create_image(
+                scene["image_prompt"],
+                image_path
+            )
+
+            create_voice(
+                scene["narration"],
+                audio_path
+            )
+
+            create_scene_video(
+                image_path,
+                audio_path,
+                video_path,
+                seconds
+            )
+
+            scene_videos.append(
+                video_path
+            )
 
             send_message(
                 chat_id,
-                "❌ حصل خطأ أثناء إنشاء الفيديو.\n\n"
-                f"{type(e).__name__}: {str(e)}"
+                f"🖼️🎬 تم تجهيز المشهد "
+                f"{number}/{len(scenes)}"
             )
 
-        return "OK", 200
 
-    # =====================
-    # NORMAL AI CHAT
-    # =====================
+        send_message(
+            chat_id,
+            "🔧 جاري تجميع كل المشاهد..."
+        )
 
-    answer = ask_gemini(user_text)
+        final_path = os.path.join(
+            work,
+            "final.mp4"
+        )
 
-    send_message(
-        chat_id,
-        answer
+        concat_videos(
+            scene_videos,
+            final_path
+        )
+
+        send_message(
+            chat_id,
+            "📤 الفيديو اكتمل، جاري إرساله..."
+        )
+
+        send_video(
+            chat_id,
+            final_path,
+            f"🎬 {script.get('title', topic)}"
+        )
+
+    except Exception as e:
+
+        print(
+            "VIDEO ERROR:",
+            repr(e)
+        )
+
+        send_message(
+            chat_id,
+            "❌ حصل خطأ أثناء صناعة الفيديو:\n\n"
+            + str(e)
+        )
+
+    finally:
+
+        shutil.rmtree(
+            work,
+            ignore_errors=True
+        )
+
+
+# ==========================================
+# API
+# ==========================================
+
+@app.route(
+    "/make-video",
+    methods=["POST"]
+)
+def make_video_endpoint():
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    chat_id = data.get("chat_id")
+    minutes = data.get("minutes")
+    topic = data.get("topic")
+
+    if not chat_id:
+        return jsonify({
+            "error": "chat_id required"
+        }), 400
+
+    if not minutes:
+        return jsonify({
+            "error": "minutes required"
+        }), 400
+
+    if not topic:
+        return jsonify({
+            "error": "topic required"
+        }), 400
+
+
+    thread = threading.Thread(
+        target=make_video,
+        args=(
+            chat_id,
+            float(minutes),
+            topic
+        ),
+
+        daemon=True
     )
 
-    return "OK", 200
+    thread.start()
+
+    return jsonify({
+        "ok": True,
+        "message": "Video job started"
+    })
+
+
+@app.route("/", methods=["GET"])
+def home():
+
+    return "AI Video Worker is running."
+
+
+if __name__ == "__main__":
+
+    app.run(
+        host="0.0.0.0",
+        port=int(
+            os.environ.get(
+                "PORT",
+                5000
+            )
+        )
+        )
