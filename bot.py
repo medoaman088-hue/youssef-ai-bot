@@ -13,6 +13,17 @@ GEMINI_URL = (
 )
 
 
+def send_telegram_message(chat_id, text):
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        json={
+            "chat_id": chat_id,
+            "text": text
+        },
+        timeout=15
+    )
+
+
 @app.route("/api", methods=["POST"])
 def telegram_webhook():
     data = request.get_json(silent=True) or {}
@@ -50,21 +61,49 @@ def telegram_webhook():
 
         result = response.json()
 
-        if response.ok:
-            answer = result["candidates"][0]["content"]["parts"][0]["text"]
+        # لو Gemini رجّع خطأ، اعرض الخطأ الحقيقي
+        if not response.ok:
+            error = result.get("error", {})
+
+            error_code = error.get("code", response.status_code)
+            error_status = error.get("status", "UNKNOWN")
+            error_message = error.get(
+                "message",
+                "Unknown Gemini API error"
+            )
+
+            answer = (
+                f"❌ Gemini API Error\n\n"
+                f"Code: {error_code}\n"
+                f"Status: {error_status}\n"
+                f"Message: {error_message}"
+            )
+
         else:
-            answer = "حصل خطأ في الاتصال بالذكاء الاصطناعي. جرّب تاني."
+            candidates = result.get("candidates", [])
 
-    except Exception:
-        answer = "حصل خطأ وأنا بحاول أجيب الرد. جرّب تاني."
+            if not candidates:
+                answer = (
+                    "❌ Gemini لم يرجع إجابة.\n\n"
+                    f"الرد:\n{result}"
+                )
+            else:
+                answer = (
+                    candidates[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "لم يتم العثور على نص في الرد.")
+                )
 
-    requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": answer
-        },
-        timeout=15
-    )
+    except requests.exceptions.Timeout:
+        answer = "❌ Gemini API أخذ وقتًا طويلًا ولم يرد."
+
+    except Exception as e:
+        answer = (
+            "❌ حصل خطأ في البوت.\n\n"
+            f"{type(e).__name__}: {str(e)}"
+        )
+
+    send_telegram_message(chat_id, answer)
 
     return "OK", 200
