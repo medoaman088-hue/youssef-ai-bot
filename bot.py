@@ -8,19 +8,14 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-CHAT_URL = (
+GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
     "models/gemini-3.5-flash-lite:generateContent"
 )
 
-IMAGE_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/"
-    "interactions"
-)
-
 
 # =========================
-# Telegram
+# إرسال رسالة إلى Telegram
 # =========================
 
 def send_message(chat_id, text):
@@ -34,31 +29,51 @@ def send_message(chat_id, text):
     )
 
 
-def send_photo(chat_id, image_bytes):
-    return requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-        data={
-            "chat_id": chat_id
+# =========================
+# تحميل صورة Telegram
+# =========================
+
+def get_telegram_image(file_id):
+
+    response = requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+        params={
+            "file_id": file_id
         },
-        files={
-            "photo": (
-                "generated.jpg",
-                image_bytes,
-                "image/jpeg"
-            )
-        },
-        timeout=60
+        timeout=30
     )
 
+    result = response.json()
+
+    if not result.get("ok"):
+        raise Exception("فشل الحصول على ملف الصورة من Telegram")
+
+    file_path = result["result"]["file_path"]
+
+    image_url = (
+        f"https://api.telegram.org/file/bot"
+        f"{BOT_TOKEN}/{file_path}"
+    )
+
+    image_response = requests.get(
+        image_url,
+        timeout=30
+    )
+
+    if not image_response.ok:
+        raise Exception("فشل تحميل الصورة")
+
+    return image_response.content
+
 
 # =========================
-# Gemini Chat
+# الشات العادي
 # =========================
 
-def chat_with_gemini(text):
+def ask_gemini_text(text):
 
     response = requests.post(
-        CHAT_URL,
+        GEMINI_URL,
         headers={
             "Content-Type": "application/json",
             "x-goog-api-key": GEMINI_API_KEY
@@ -81,10 +96,11 @@ def chat_with_gemini(text):
 
     if not response.ok:
         error = result.get("error", {})
+
         raise Exception(
             error.get(
                 "message",
-                "Gemini chat error"
+                "Gemini Error"
             )
         )
 
@@ -95,67 +111,35 @@ def chat_with_gemini(text):
 
 
 # =========================
-# Telegram Image Download
-# =========================
-
-def download_telegram_photo(file_id):
-
-    result = requests.get(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
-        params={
-            "file_id": file_id
-        },
-        timeout=30
-    ).json()
-
-    if not result.get("ok"):
-        raise Exception("فشل الحصول على الصورة من Telegram")
-
-    file_path = result["result"]["file_path"]
-
-    image_url = (
-        f"https://api.telegram.org/file/bot"
-        f"{BOT_TOKEN}/{file_path}"
-    )
-
-    image = requests.get(
-        image_url,
-        timeout=30
-    )
-
-    if not image.ok:
-        raise Exception("فشل تحميل الصورة")
-
-    return image.content
-
-
-# =========================
-# Gemini Image Understanding
+# تحليل الصورة
 # =========================
 
 def analyze_image(image_bytes, question):
 
-    image_b64 = base64.b64encode(
+    image_base64 = base64.b64encode(
         image_bytes
     ).decode("utf-8")
 
     response = requests.post(
-        IMAGE_URL,
+        GEMINI_URL,
         headers={
             "Content-Type": "application/json",
             "x-goog-api-key": GEMINI_API_KEY
         },
         json={
-            "model": "gemini-3.8-flash",
-            "input": [
+            "contents": [
                 {
-                    "type": "text",
-                    "text": question
-                },
-                {
-                    "type": "image",
-                    "data": image_b64,
-                    "mime_type": "image/jpeg"
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": image_base64
+                            }
+                        },
+                        {
+                            "text": question
+                        }
+                    ]
                 }
             ]
         },
@@ -166,6 +150,7 @@ def analyze_image(image_bytes, question):
 
     if not response.ok:
         error = result.get("error", {})
+
         raise Exception(
             error.get(
                 "message",
@@ -173,76 +158,14 @@ def analyze_image(image_bytes, question):
             )
         )
 
-    # محاولة الحصول على النص
-    if result.get("output_text"):
-        return result["output_text"]
-
-    if result.get("output"):
-        for item in result["output"]:
-            if item.get("type") == "text":
-                return item.get("text", "")
-
-    return "❌ لم أستطع استخراج إجابة من الصورة."
-
-
-# =========================
-# Gemini Image Generation
-# =========================
-
-def generate_image(prompt):
-
-    response = requests.post(
-        IMAGE_URL,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        },
-        json={
-            "model": "gemini-3.1-flash-image",
-            "input": prompt,
-            "response_format": {
-                "type": "image",
-                "mime_type": "image/jpeg",
-                "aspect_ratio": "1:1",
-                "image_size": "1K"
-            }
-        },
-        timeout=120
+    return (
+        result["candidates"][0]
+        ["content"]["parts"][0]["text"]
     )
 
-    result = response.json()
-
-    if not response.ok:
-        error = result.get("error", {})
-
-        raise Exception(
-            error.get(
-                "message",
-                "Image generation error"
-            )
-        )
-
-    image_data = None
-
-    if result.get("output_image"):
-        image_data = result["output_image"].get("data")
-
-    if not image_data and result.get("output"):
-        for item in result["output"]:
-            if item.get("type") == "image":
-                image_data = item.get("data")
-                break
-
-    if not image_data:
-        raise Exception(
-            "Gemini لم يرجع صورة."
-        )
-
-    return base64.b64decode(image_data)
-
 
 # =========================
-# Main Webhook
+# Webhook
 # =========================
 
 @app.route("/api", methods=["POST"])
@@ -262,7 +185,7 @@ def webhook():
     try:
 
         # =====================
-        # IMAGE MESSAGE
+        # لو المستخدم بعت صورة
         # =====================
 
         if "photo" in message:
@@ -271,13 +194,13 @@ def webhook():
 
             file_id = photo["file_id"]
 
-            image_bytes = download_telegram_photo(
+            image_bytes = get_telegram_image(
                 file_id
             )
 
             question = message.get(
                 "caption",
-                "اشرح لي الصورة بالتفصيل وبطريقة بسيطة."
+                "اشرح لي هذه الصورة بالتفصيل وبطريقة بسيطة."
             )
 
             answer = analyze_image(
@@ -294,7 +217,7 @@ def webhook():
 
 
         # =====================
-        # TEXT MESSAGE
+        # رسالة نصية
         # =====================
 
         text = message.get(
@@ -305,52 +228,7 @@ def webhook():
         if not text:
             return "OK", 200
 
-
-        # =====================
-        # /image
-        # =====================
-
-        if text.startswith("/image"):
-
-            prompt = text[
-                len("/image"):
-            ].strip()
-
-            if not prompt:
-
-                send_message(
-                    chat_id,
-                    "اكتب وصف الصورة بعد الأمر.\n\n"
-                    "مثال:\n"
-                    "/image قطة كرتونية في الفضاء"
-                )
-
-                return "OK", 200
-
-            image_bytes = generate_image(
-                prompt
-            )
-
-            result = send_photo(
-                chat_id,
-                image_bytes
-            )
-
-            if not result.ok:
-
-                send_message(
-                    chat_id,
-                    "❌ تم إنشاء الصورة لكن فشل إرسالها إلى Telegram."
-                )
-
-            return "OK", 200
-
-
-        # =====================
-        # NORMAL CHAT
-        # =====================
-
-        answer = chat_with_gemini(
+        answer = ask_gemini_text(
             text
         )
 
@@ -376,7 +254,7 @@ def webhook():
 
 
 # =========================
-# Home
+# الصفحة الرئيسية
 # =========================
 
 @app.route("/", methods=["GET"])
@@ -386,7 +264,7 @@ def home():
 
 
 # =========================
-# Run
+# تشغيل التطبيق
 # =========================
 
 if __name__ == "__main__":
