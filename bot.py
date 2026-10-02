@@ -8,275 +8,395 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-
-# ==================================================
-# تنظيف ردود Gemini من LaTeX
-# ==================================================
-
-def clean_telegram_text(text):
-
-    if not text:
-        return text
-
-    # إزالة LaTeX delimiters
-    text = text.replace("$$", "")
-    text = text.replace("$", "")
-
-    # أوامر التنسيق
-    text = text.replace(r"\mathbf{", "")
-    text = text.replace(r"\textbf{", "")
-    text = text.replace(r"\mathrm{", "")
-    text = text.replace(r"\text{", "")
-
-    # الأسهم
-    text = text.replace(r"\rightarrow", "→")
-    text = text.replace(r"\to", "→")
-    text = text.replace(r"\Rightarrow", "⇒")
-    text = text.replace(r"\Leftarrow", "⇐")
-    text = text.replace(r"\leftrightarrow", "⇌")
-    text = text.replace(r"\rightleftharpoons", "⇌")
-
-    # رموز رياضية
-    text = text.replace(r"\times", "×")
-    text = text.replace(r"\div", "÷")
-    text = text.replace(r"\pm", "±")
-    text = text.replace(r"\approx", "≈")
-    text = text.replace(r"\neq", "≠")
-    text = text.replace(r"\leq", "≤")
-    text = text.replace(r"\geq", "≥")
-
-    # بعض أوامر LaTeX الأخرى
-    text = text.replace(r"\,", " ")
-    text = text.replace(r"\;", " ")
-    text = text.replace(r"\ ", " ")
-
-    # الأقواس الناتجة عن أوامر التنسيق
-    text = text.replace("{", "")
-    text = text.replace("}", "")
-
-    # إزالة بعض الـ backslashes المتبقية
-    text = text.replace(r"\left", "")
-    text = text.replace(r"\right", "")
-
-    return text.strip()
-
-
-# ==================================================
-# إرسال رسالة Telegram
-# ==================================================
-
-def send_message(chat_id, text):
-
-    try:
-
-        response = requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text
-            },
-            timeout=30
-        )
-
-        print(
-            "Telegram sendMessage:",
-            response.status_code
-        )
-
-        print(response.text)
-
-    except Exception as e:
-
-        print(
-            "Telegram ERROR:",
-            repr(e)
-        )
-
-
-# ==================================================
-# إرسال صورة Telegram
-# ==================================================
-
-def send_photo(chat_id, image_bytes):
-
-    try:
-
-        response = requests.post(
-            f"{TELEGRAM_API}/sendPhoto",
-
-            data={
-                "chat_id": chat_id
-            },
-
-            files={
-                "photo": (
-                    "generated_image.jpg",
-                    image_bytes,
-                    "image/jpeg"
-                )
-            },
-
-            timeout=60
-        )
-
-        print(
-            "Telegram sendPhoto:",
-            response.status_code
-        )
-
-        print(response.text)
-
-        return response.ok
-
-    except Exception as e:
-
-        print(
-            "sendPhoto ERROR:",
-            repr(e)
-        )
-
-        return False
-
-
-# ==================================================
-# Gemini Chat
-# ==================================================
-
-GEMINI_CHAT_URL = (
+CHAT_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
     "models/gemini-3.5-flash-lite:generateContent"
 )
 
+IMAGE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/"
+    "interactions"
+)
 
-def ask_gemini(text):
 
-    response = requests.post(
+# =========================
+# Telegram
+# =========================
 
-        GEMINI_CHAT_URL,
-
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        },
-
+def send_message(chat_id, text):
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         json={
-
-            "contents": [
-
-                {
-
-                    "parts": [
-
-                        {
-
-                            "text": (
-
-                                "أنت مساعد تعليمي ذكي.\n\n"
-
-                                "أجب باللغة المناسبة لسؤال المستخدم، "
-                                "ويفضل العربية المصرية عندما يكون السؤال "
-                                "بالعامية المصرية.\n\n"
-
-                                "اجعل الإجابة مناسبة للعرض داخل Telegram.\n\n"
-
-                                "مهم جدًا:\n"
-
-                                "لا تستخدم LaTeX.\n"
-
-                                "لا تستخدم $$.\n"
-
-                                "لا تستخدم $.\n"
-
-                                "لا تستخدم \\mathbf{}.\n"
-
-                                "لا تستخدم \\rightarrow.\n"
-
-                                "لا تستخدم أوامر LaTeX الأخرى.\n\n"
-
-                                "اكتب الصيغ الكيميائية كنص واضح، "
-                                "مثل CH₃COOH و C₂H₄O₂.\n\n"
-
-                                "استخدم الأسهم العادية مثل →.\n\n"
-
-                                "اجعل الشرح واضحًا ومنظمًا وبسيطًا، "
-                                "ولا تكتب مقدمات طويلة بدون داعٍ.\n\n"
-
-                                f"سؤال المستخدم:\n{text}"
-
-                            )
-
-                        }
-
-                    ]
-
-                }
-
-            ]
-
+            "chat_id": chat_id,
+            "text": text
         },
+        timeout=30
+    )
 
+
+def send_photo(chat_id, image_bytes):
+    return requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+        data={
+            "chat_id": chat_id
+        },
+        files={
+            "photo": (
+                "generated.jpg",
+                image_bytes,
+                "image/jpeg"
+            )
+        },
         timeout=60
     )
 
 
-    print(
-        "Gemini chat status:",
-        response.status_code
+# =========================
+# Gemini Chat
+# =========================
+
+def chat_with_gemini(text):
+
+    response = requests.post(
+        CHAT_URL,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        },
+        json={
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": text
+                        }
+                    ]
+                }
+            ]
+        },
+        timeout=60
     )
 
-    print(
-        "Gemini chat response:",
-        response.text[:3000]
-    )
-
-
-    try:
-
-        result = response.json()
-
-    except Exception:
-
-        return "❌ Gemini رجع استجابة غير مفهومة."
-
+    result = response.json()
 
     if not response.ok:
-
-        error = result.get(
-            "error",
-            {}
+        error = result.get("error", {})
+        raise Exception(
+            error.get(
+                "message",
+                "Gemini chat error"
+            )
         )
 
-        return (
+    return (
+        result["candidates"][0]
+        ["content"]["parts"][0]["text"]
+    )
 
-            "❌ Gemini Error\n\n"
 
-            f"Code: "
-            f"{error.get('code', response.status_code)}\n"
+# =========================
+# Telegram Image Download
+# =========================
 
-            f"Status: "
-            f"{error.get('status', 'UNKNOWN')}\n"
+def download_telegram_photo(file_id):
 
-            f"Message: "
-            f"{error.get('message', 'Unknown error')}"
+    result = requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+        params={
+            "file_id": file_id
+        },
+        timeout=30
+    ).json()
 
+    if not result.get("ok"):
+        raise Exception("فشل الحصول على الصورة من Telegram")
+
+    file_path = result["result"]["file_path"]
+
+    image_url = (
+        f"https://api.telegram.org/file/bot"
+        f"{BOT_TOKEN}/{file_path}"
+    )
+
+    image = requests.get(
+        image_url,
+        timeout=30
+    )
+
+    if not image.ok:
+        raise Exception("فشل تحميل الصورة")
+
+    return image.content
+
+
+# =========================
+# Gemini Image Understanding
+# =========================
+
+def analyze_image(image_bytes, question):
+
+    image_b64 = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+    response = requests.post(
+        IMAGE_URL,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        },
+        json={
+            "model": "gemini-3.8-flash",
+            "input": [
+                {
+                    "type": "text",
+                    "text": question
+                },
+                {
+                    "type": "image",
+                    "data": image_b64,
+                    "mime_type": "image/jpeg"
+                }
+            ]
+        },
+        timeout=90
+    )
+
+    result = response.json()
+
+    if not response.ok:
+        error = result.get("error", {})
+        raise Exception(
+            error.get(
+                "message",
+                "Image analysis error"
+            )
         )
 
+    # محاولة الحصول على النص
+    if result.get("output_text"):
+        return result["output_text"]
+
+    if result.get("output"):
+        for item in result["output"]:
+            if item.get("type") == "text":
+                return item.get("text", "")
+
+    return "❌ لم أستطع استخراج إجابة من الصورة."
+
+
+# =========================
+# Gemini Image Generation
+# =========================
+
+def generate_image(prompt):
+
+    response = requests.post(
+        IMAGE_URL,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        },
+        json={
+            "model": "gemini-3.1-flash-image",
+            "input": prompt,
+            "response_format": {
+                "type": "image",
+                "mime_type": "image/jpeg",
+                "aspect_ratio": "1:1",
+                "image_size": "1K"
+            }
+        },
+        timeout=120
+    )
+
+    result = response.json()
+
+    if not response.ok:
+        error = result.get("error", {})
+
+        raise Exception(
+            error.get(
+                "message",
+                "Image generation error"
+            )
+        )
+
+    image_data = None
+
+    if result.get("output_image"):
+        image_data = result["output_image"].get("data")
+
+    if not image_data and result.get("output"):
+        for item in result["output"]:
+            if item.get("type") == "image":
+                image_data = item.get("data")
+                break
+
+    if not image_data:
+        raise Exception(
+            "Gemini لم يرجع صورة."
+        )
+
+    return base64.b64decode(image_data)
+
+
+# =========================
+# Main Webhook
+# =========================
+
+@app.route("/api", methods=["POST"])
+def webhook():
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    if "message" not in data:
+        return "OK", 200
+
+    message = data["message"]
+
+    chat_id = message["chat"]["id"]
 
     try:
 
-        answer = (
-            result["candidates"][0]
-            ["content"]["parts"][0]["text"]
+        # =====================
+        # IMAGE MESSAGE
+        # =====================
+
+        if "photo" in message:
+
+            photo = message["photo"][-1]
+
+            file_id = photo["file_id"]
+
+            image_bytes = download_telegram_photo(
+                file_id
+            )
+
+            question = message.get(
+                "caption",
+                "اشرح لي الصورة بالتفصيل وبطريقة بسيطة."
+            )
+
+            answer = analyze_image(
+                image_bytes,
+                question
+            )
+
+            send_message(
+                chat_id,
+                answer
+            )
+
+            return "OK", 200
+
+
+        # =====================
+        # TEXT MESSAGE
+        # =====================
+
+        text = message.get(
+            "text",
+            ""
+        ).strip()
+
+        if not text:
+            return "OK", 200
+
+
+        # =====================
+        # /image
+        # =====================
+
+        if text.startswith("/image"):
+
+            prompt = text[
+                len("/image"):
+            ].strip()
+
+            if not prompt:
+
+                send_message(
+                    chat_id,
+                    "اكتب وصف الصورة بعد الأمر.\n\n"
+                    "مثال:\n"
+                    "/image قطة كرتونية في الفضاء"
+                )
+
+                return "OK", 200
+
+            image_bytes = generate_image(
+                prompt
+            )
+
+            result = send_photo(
+                chat_id,
+                image_bytes
+            )
+
+            if not result.ok:
+
+                send_message(
+                    chat_id,
+                    "❌ تم إنشاء الصورة لكن فشل إرسالها إلى Telegram."
+                )
+
+            return "OK", 200
+
+
+        # =====================
+        # NORMAL CHAT
+        # =====================
+
+        answer = chat_with_gemini(
+            text
         )
 
-        return clean_telegram_text(answer)
+        send_message(
+            chat_id,
+            answer
+        )
 
-    except Exception:
+    except Exception as e:
 
-        return "❌ Gemini لم يرجع نصًا مفهومًا."
+        print(
+            "ERROR:",
+            repr(e)
+        )
+
+        send_message(
+            chat_id,
+            "❌ حصل خطأ:\n\n"
+            + str(e)
+        )
+
+    return "OK", 200
 
 
-# ==================================================
-# تحميل صورة
+# =========================
+# Home
+# =========================
+
+@app.route("/", methods=["GET"])
+def home():
+
+    return "Youssef AI Bot is running."
+
+
+# =========================
+# Run
+# =========================
+
+if __name__ == "__main__":
+
+    app.run(
+        host="0.0.0.0",
+        port=int(
+            os.environ.get(
+                "PORT",
+                5000
+            )
+        )
+    )
