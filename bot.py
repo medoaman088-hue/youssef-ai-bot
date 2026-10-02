@@ -14,11 +14,48 @@ GEMINI_URL = (
 )
 
 
-# =========================
-# إرسال رسالة إلى Telegram
-# =========================
+def clean_telegram_text(text):
+
+    if not text:
+        return text
+
+    replacements = {
+        "$$": "",
+        "$": "",
+        r"\mathbf{": "",
+        r"\text{": "",
+        r"\mathrm{": "",
+        r"\textbf{": "",
+        r"\rightarrow": "→",
+        r"\to": "→",
+        r"\Rightarrow": "⇒",
+        r"\Leftarrow": "⇐",
+        r"\leftrightarrow": "⇌",
+        r"\rightleftharpoons": "⇌",
+        r"\times": "×",
+        r"\div": "÷",
+        r"\pm": "±",
+        r"\approx": "≈",
+        r"\neq": "≠",
+        r"\leq": "≤",
+        r"\geq": "≥",
+        r"\left": "",
+        r"\right": "",
+        r"\,": " ",
+        r"\;": " ",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    text = text.replace("{", "")
+    text = text.replace("}", "")
+
+    return text.strip()
+
 
 def send_message(chat_id, text):
+
     requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         json={
@@ -28,10 +65,6 @@ def send_message(chat_id, text):
         timeout=30
     )
 
-
-# =========================
-# تحميل صورة Telegram
-# =========================
 
 def get_telegram_image(file_id):
 
@@ -46,7 +79,9 @@ def get_telegram_image(file_id):
     result = response.json()
 
     if not result.get("ok"):
-        raise Exception("فشل الحصول على ملف الصورة من Telegram")
+        raise Exception(
+            "فشل الحصول على الصورة من Telegram"
+        )
 
     file_path = result["result"]["file_path"]
 
@@ -61,16 +96,33 @@ def get_telegram_image(file_id):
     )
 
     if not image_response.ok:
-        raise Exception("فشل تحميل الصورة")
+        raise Exception(
+            "فشل تحميل الصورة"
+        )
 
     return image_response.content
 
 
-# =========================
-# الشات العادي
-# =========================
-
 def ask_gemini_text(text):
+
+    prompt = """
+أنت Youssef AI Bot.
+
+أجب باللغة العربية بطريقة واضحة وبسيطة ومباشرة.
+
+قواعد مهمة جدًا:
+- لا تستخدم LaTeX نهائيًا.
+- لا تستخدم $ أو $$.
+- لا تستخدم \\mathbf أو \\text أو \\mathrm.
+- اكتب الصيغ الكيميائية بشكل نصي واضح.
+- استخدم الرموز السفلية عند الحاجة مثل H₂O و CH₃COOH و C₂H₅OH.
+- استخدم الأسهم العادية مثل → و ⇌.
+- استخدم العناوين والنقاط عندما يكون ذلك مفيدًا.
+- لا تقل إنك نموذج لغوي نصي.
+- إذا طلب المستخدم إنشاء صورة، لا تدّعي أنك أنشأتها.
+
+سؤال المستخدم:
+""" + text
 
     response = requests.post(
         GEMINI_URL,
@@ -83,7 +135,7 @@ def ask_gemini_text(text):
                 {
                     "parts": [
                         {
-                            "text": text
+                            "text": prompt
                         }
                     ]
                 }
@@ -95,6 +147,7 @@ def ask_gemini_text(text):
     result = response.json()
 
     if not response.ok:
+
         error = result.get("error", {})
 
         raise Exception(
@@ -104,15 +157,13 @@ def ask_gemini_text(text):
             )
         )
 
-    return (
+    answer = (
         result["candidates"][0]
         ["content"]["parts"][0]["text"]
     )
 
+    return clean_telegram_text(answer)
 
-# =========================
-# تحليل الصورة
-# =========================
 
 def analyze_image(image_bytes, question):
 
@@ -120,161 +171,18 @@ def analyze_image(image_bytes, question):
         image_bytes
     ).decode("utf-8")
 
-    response = requests.post(
-        GEMINI_URL,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        },
-        json={
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": image_base64
-                            }
-                        },
-                        {
-                            "text": question
-                        }
-                    ]
-                }
-            ]
-        },
-        timeout=90
-    )
+    prompt = """
+أنت Youssef AI Bot.
 
-    result = response.json()
+حلل الصورة التي أرسلها المستخدم وأجب بالعربية.
 
-    if not response.ok:
-        error = result.get("error", {})
+اشرح بطريقة بسيطة ومناسبة لطالب.
+إذا كانت الصورة تحتوي على:
+- سؤال: حله واشرح الخطوات.
+- رسم: اشرح الرسم.
+- معادلة كيميائية: اشرحها.
+- صفحة محاضرة: لخص واشرح الجزء المطلوب.
 
-        raise Exception(
-            error.get(
-                "message",
-                "Image analysis error"
-            )
-        )
-
-    return (
-        result["candidates"][0]
-        ["content"]["parts"][0]["text"]
-    )
-
-
-# =========================
-# Webhook
-# =========================
-
-@app.route("/api", methods=["POST"])
-def webhook():
-
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    if "message" not in data:
-        return "OK", 200
-
-    message = data["message"]
-
-    chat_id = message["chat"]["id"]
-
-    try:
-
-        # =====================
-        # لو المستخدم بعت صورة
-        # =====================
-
-        if "photo" in message:
-
-            photo = message["photo"][-1]
-
-            file_id = photo["file_id"]
-
-            image_bytes = get_telegram_image(
-                file_id
-            )
-
-            question = message.get(
-                "caption",
-                "اشرح لي هذه الصورة بالتفصيل وبطريقة بسيطة."
-            )
-
-            answer = analyze_image(
-                image_bytes,
-                question
-            )
-
-            send_message(
-                chat_id,
-                answer
-            )
-
-            return "OK", 200
-
-
-        # =====================
-        # رسالة نصية
-        # =====================
-
-        text = message.get(
-            "text",
-            ""
-        ).strip()
-
-        if not text:
-            return "OK", 200
-
-        answer = ask_gemini_text(
-            text
-        )
-
-        send_message(
-            chat_id,
-            answer
-        )
-
-    except Exception as e:
-
-        print(
-            "ERROR:",
-            repr(e)
-        )
-
-        send_message(
-            chat_id,
-            "❌ حصل خطأ:\n\n"
-            + str(e)
-        )
-
-    return "OK", 200
-
-
-# =========================
-# الصفحة الرئيسية
-# =========================
-
-@app.route("/", methods=["GET"])
-def home():
-
-    return "Youssef AI Bot is running."
-
-
-# =========================
-# تشغيل التطبيق
-# =========================
-
-if __name__ == "__main__":
-
-    app.run(
-        host="0.0.0.0",
-        port=int(
-            os.environ.get(
-                "PORT",
-                5000
-            )
-        )
-    )
+مهم:
+لا تستخدم LaTeX.
+لا تستخدم $ أو $$.
