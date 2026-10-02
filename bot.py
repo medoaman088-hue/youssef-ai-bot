@@ -9,7 +9,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-3.8-flash:generateContent"
+    "models/gemini-3.5-flash-lite:generateContent"
 )
 
 
@@ -61,7 +61,6 @@ def telegram_webhook():
 
         result = response.json()
 
-        # لو Gemini رجّع خطأ، اعرض الخطأ الحقيقي
         if not response.ok:
             error = result.get("error", {})
 
